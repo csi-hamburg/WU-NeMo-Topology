@@ -1,0 +1,213 @@
+---
+title: "Wake indirect SC topology"
+author: "ES"
+date: "10/7/2020"
+output:
+  html_document:
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+options(bitmapType='cairo')
+knitr::opts_chunk$set(echo = TRUE)
+require(tidyverse)
+require(magrittr)
+require(ggplot2)
+```
+
+Load data
+```{r}
+asz <- 86
+#source('./prepdata.r')
+load('prepdata.RData')
+  
+```
+
+```{r}
+require(ggpmisc)
+dd %>% 
+  ggplot(aes(x = lesionvolume, y = GGP)) +
+  geom_point(aes(fill = treatment, shape = treatment), alpha = .2, stroke = .5) +
+  geom_smooth(method = 'lm', color = 'black', size = .5) +
+  #geom_smooth(aes(y = stage(GGP, after_stat = y+1), ymin = after_stat(ymin+1), ymax = after_stat(ymax+1))
+  #            , method = 'lm', formula = I(y-1)~0+x, color = 'orange', fill = 'orange') +
+  #stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+             #   parse = TRUE) +
+  facet_grid(lab ~ visit, switch = 'y', scales = 'free', space = 'free_x'
+             , labeller = labeller(visit = c(V0 = 'Before', V3 = '22-36 hours after randomisation')
+                                   , lab = c(efficiency = 'Global efficiency', clustering = 'Global clustering'))) +
+  scale_x_continuous(expression('Lesion volume [ml] (ADC < 620 x 10'^-6~'mm'^2~'/s)')) +
+  scale_y_continuous('', labels = scales::percent_format(accuracy = 1)) +
+  scale_shape_manual(values = c(3,4)) +
+  guides(fill = 'none', shape = 'none') + 
+  theme_minimal() +
+  theme(strip.placement = 'outside'
+        , panel.grid.minor.x = element_blank()
+        , panel.grid.major.x = element_blank()
+        , strip.background = element_blank()
+        , panel.border = element_rect(color = 'black', fill = NA)
+        , plot.background = element_rect(fill = "white", color = NA))
+ggsave(filename = './../../derivatives/figures/R/Fig-1.png', units = 'cm', width = 18, height = 9, dpi = 600)
+
+```
+
+```{r reg1}
+require(lme4)
+require(lmerTest)
+require(broom.mixed)
+dd %>% group_by(lab) %>% 
+  nest() %>% 
+  mutate(mdl = map(data, ~lmer(GGP ~ visit + I(lesionvolume/10) + (1|ID), data = .))
+         , tidy = map(mdl, tidy)) %>% 
+  unnest(tidy) %>% 
+  dplyr::filter(term == 'I(lesionvolume/10)')
+
+dd %>% group_by(lab) %>% nest() %>% 
+  mutate(fm = map(data, ~lmer(lesionvolume ~ visit + (1|ID), data = .))
+         , mdl2 = map2(data, fm, ~lm(I(100*GGP) ~  I(fitted(.y)/10), data = .x))
+         , tidy = map(mdl2, ~tidy(., conf.int = TRUE))) %>% 
+  unnest(tidy) %>% 
+  select(-c(data, statistic))
+
+dd %>% group_by(lab, visit, treatment) %>% summarise(mean(GGP), sd(GGP)/sqrt(n()))
+
+dd %>% group_by(lab, visit) %>% 
+  nest() %>% 
+  mutate(mdl = map(data, ~lm(GGP ~ treatment + lesionvolume, data = .))
+         , tidy = map(mdl, tidy)) %>% 
+  unnest(tidy) %>% 
+  dplyr::filter(term == 'treatmentrtPA') %>% 
+  arrange(visit)
+```
+
+
+```{r reg2}
+ddd <- dd %>% group_by(ID, lab) %>% 
+  mutate(GGP0 = GGP[visit == 'V0']
+         , lesionvolume0 = lesionvolume[visit == 'V0']
+         , dGGP = GGP - GGP[visit == 'V0']
+         , dvol = lesionvolume - lesionvolume0) %>% 
+  dplyr::filter(visit == 'V3') %>% 
+  ungroup() %>% group_by(lab)
+
+
+d.es <- ddd %>% group_by(treatment, lab) %>% 
+  summarise(m = mean(dGGP)
+            , s = sd(dGGP)/sqrt(n()))
+
+d.stats <- ddd %>% nest() %>% 
+  mutate(mdl = map(data, ~lm(dGGP ~ treatment , data = .))
+         , tidy = map(mdl, ~tidy(., conf.int = TRUE))) %>% 
+  unnest(tidy) %>% 
+  filter(term == 'treatmentrtPA')
+
+d.stats.adj <- ddd %>% nest() %>% 
+  mutate(mdl = map(data, ~lm(I(dGGP) ~ treatment + I(lesionvolume0/10) +I(dvol/10), data = .))
+         , tidy = map(mdl, ~tidy(., conf.int = TRUE))) %>% 
+  unnest(tidy) %>% 
+  select(-c(data, mdl, statistic)) %T>% print() %>%  
+  filter(term == 'treatmentrtPA')
+```
+
+```{r supplement}
+ddd %>% group_by(lab, ID) %>% 
+  ungroup() %>% group_by(lab) %>%  nest() %>% 
+  mutate(mdl = map(data, ~lm(I(100*GGP) ~ treatment + I(lesionvolume0/10) + I(dvol/10) + I(100*GGP0), data = .))
+         , tidy = map(mdl, tidy)) %>% 
+  unnest(tidy) %>% 
+  select(-c(data, mdl, statistic)) 
+
+
+
+dd %>% group_by(lab,ID) %>% 
+  mutate(lesionvolume0 = lesionvolume[visit == 'V0']
+         , dvol = lesionvolume - lesionvolume0) %>% 
+  ungroup() %>% group_by(lab) %>% nest() %>% 
+  mutate(fm = map(data, ~lmer(lesionvolume ~ visit*treatment + (1|ID), data = .))
+         , mdl2 = map2(data, fm, ~lm(I(100*GGP) ~  I(fitted(.y)/10), data = .x))
+         , mdl = map(data, ~lmer(I(100*GGP) ~ treatment*visit + I(lesionvolume/10) + I(dvol/10) + (1|ID), data = .))
+         , tidy = map(mdl, tidy)) %>% 
+  unnest(tidy) %>% 
+  select(-c(data, group, effect, fm, mdl, mdl2, statistic, df)) 
+```
+
+
+```{r}
+require(forestplot)
+
+es.Placebo.eff <- scales::number(100*as.numeric(d.es[d.es$treatment=='Placebo' & d.es$lab=='efficiency','m']), .01)
+es.Placebo.clus <- scales::number(100*as.numeric(d.es[d.es$treatment=='Placebo' & d.es$lab=='clustering','m']), .01)
+es.rtPA.eff <- scales::number(100*as.numeric(d.es[d.es$treatment=='rtPA' & d.es$lab=='efficiency','m']), .01)
+es.rtPA.clus <- scales::number(100*as.numeric(d.es[d.es$treatment=='rtPA' & d.es$lab=='clustering','m']), .01)
+
+p.eff <- d.stats %>% dplyr::filter(lab=='efficiency') %>% pull('p.value') %>% 
+  scales::number(accuracy = .0001)
+p.clus <- d.stats %>% dplyr::filter(lab=='clustering') %>% pull('p.value') %>% 
+  scales::number(accuracy = .0001)
+
+
+p.eff.adj <- d.stats.adj %>% dplyr::filter(lab=='efficiency') %>% pull('p.value') %>% 
+  scales::number(accuracy = .0001)
+p.clus.adj <- d.stats.adj %>% dplyr::filter(lab=='clustering') %>% pull('p.value') %>% 
+  scales::number(accuracy = .0001)
+
+tabletext<-list(
+  list("", "", "Efficiency", "Clustering")
+  ,  list(expression(Delta[GGP]~'[pp]'), "(Placebo)", es.Placebo.eff, es.Placebo.clus)
+  , list(expression(Delta[GGP]~'[pp]'), "(Alteplase)", es.rtPA.eff, es.rtPA.clus)
+  , list("", "P", p.eff, p.clus)
+  ,  list("", expression("P"[adj]), p.eff.adj, p.clus.adj)
+  )
+
+
+tiff("./../../derivatives/figures/R/Fig-2.tiff", width=18.5, height=5, units = 'cm', res = 600)
+
+font <- "HersheyGothicEnglish"
+forestplot(tabletext
+           , mean  = cbind(c(NA, NA, 100*as.numeric(d.stats %>% dplyr::filter(lab=='efficiency') %>% pull('estimate'))
+                             , 100*as.numeric(d.stats %>% dplyr::filter(lab=='clustering') %>% pull('estimate')))
+                    , c(NA, NA, 100*as.numeric(d.stats.adj %>% dplyr::filter(lab=='efficiency') %>% pull('estimate'))
+                             , 100*as.numeric(d.stats.adj %>% dplyr::filter(lab=='clustering') %>% pull('estimate'))))
+           , lower = cbind(c(NA, NA, 100*as.numeric(d.stats %>% dplyr::filter(lab=='efficiency') %>% pull('conf.low'))
+                             , 100*as.numeric(d.stats %>% dplyr::filter(lab=='clustering') %>% pull('conf.low')))
+                    , c(NA, NA, 100*as.numeric(d.stats.adj %>% dplyr::filter(lab=='efficiency') %>% pull('conf.low'))
+                             , 100*as.numeric(d.stats.adj %>% dplyr::filter(lab=='clustering') %>% pull('conf.low'))))
+           , upper = cbind(c(NA, NA, 100*as.numeric(d.stats %>% dplyr::filter(lab=='efficiency') %>% pull('conf.high'))
+                             , 100*as.numeric(d.stats %>% dplyr::filter(lab=='clustering') %>% pull('conf.high')))
+                    , c(NA, NA, 100*as.numeric(d.stats.adj %>% dplyr::filter(lab=='efficiency') %>% pull('conf.high'))
+                             , 100*as.numeric(d.stats.adj %>% dplyr::filter(lab=='clustering') %>% pull('conf.high'))))
+           , legend_args = fpLegend(pos = list('topright', inset = .15, align='horizontal'), gp=gpar(col="white", fill="snow", fontface=1))
+           , legend = c("Unadjusted", "Adjusted")
+           , fn.ci_norm = c(fpDrawNormalCI, fpDrawCircleCI)
+           #, clip =c(-.125, 0.075)
+           , hrzl_lines = list("3" = gpar(lty = 2, columns = 1:5))
+           , col = fpColors(box=c("black", "black"), line=c("black", "black"))
+           , xlab="Treatment effect [percentage points]"
+           , txt_gp = fpTxtGp(label = list(gpar(fontfamily = 'serif', fontface = 1, cex = .7)
+                                           , gpar(fontfamiliy = '', fontface=1, cex = .7)
+                                           , gpar(fontfamiliy = '', fontface=1, cex = .7)
+                                           , gpar(fontfamiliy = '', fontface=1, cex = .7)
+                                           , gpar(fontfamiliy = '', fontface=1, cex = .7))
+                              , ticks = gpar(cex = .6)
+                              , xlab = gpar(cex = .6))
+           , line.margin = .6
+           , boxsize = .2
+           )
+dev.off()
+```
+
+```{r}
+mm <- dd %>% group_by(ID, lab) %>% 
+  mutate(dGGP = GGP - GGP[visit == 'V0']
+         , llv = log(lesionvolume[visit == 'V0'])
+         , dvol = log(lesionvolume/lesionvolume[visit == 'V0'])) %>% 
+  dplyr::filter(visit == 'V3') %>% 
+  ungroup() %>%  group_by(lab) %>% nest() %>% 
+  mutate(mdl = map(data, ~glm(not(goodOutcome) ~ treatment + NIHSS  + age + llv  + I(dGGP*100), data = . , family = binomial(link = 'logit')))
+         , tidy = map(mdl, ~tidy(., exponentiate = TRUE, conf.int = TRUE))) 
+
+mm %>% 
+  unnest(tidy) %>% 
+  dplyr::select(-c(data, mdl, statistic))
+```
+
